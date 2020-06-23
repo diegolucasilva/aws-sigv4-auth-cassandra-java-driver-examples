@@ -47,10 +47,10 @@ public class OrderFetcher {
 
         try (CqlSession session = CqlSession.builder().addContactPoints(contactPoints).withAuthProvider(provider).withLocalDatacenter(args[0]).build()) {
             // Use a prepared query for quoting
-            PreparedStatement insert = session.prepare("insert into acme.orders2(email)" +
-                    "VALUES ('teste@gmail.com)'");
+           /* PreparedStatement insert = session.prepare("insert into acme.orders2(email)" +
+                    "VALUES (teste@gmail.com)");
             ResultSet rs2 = session.execute(insert.bind(args[2]));
-
+*/
 
             PreparedStatement prepared = session.prepare("select * from acme.orders where customer_id = ?");
 
