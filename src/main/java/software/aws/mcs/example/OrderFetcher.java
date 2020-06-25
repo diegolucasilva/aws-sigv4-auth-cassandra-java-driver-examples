@@ -21,50 +21,127 @@ package software.aws.mcs.examples;
  * #L%
  */
 
+import com.amazonaws.regions.Regions;
+import com.amazonaws.services.s3.AmazonS3;
+import com.amazonaws.services.s3.AmazonS3Builder;
+import com.amazonaws.services.s3.AmazonS3ClientBuilder;
+import com.amazonaws.services.s3.model.GetObjectRequest;
+import com.amazonaws.services.s3.model.S3Object;
+import com.amazonaws.services.s3.model.S3ObjectInputStream;
+import com.datastax.oss.driver.api.core.ConsistencyLevel;
 import com.datastax.oss.driver.api.core.CqlSession;
 import com.datastax.oss.driver.api.core.cql.*;
 
 import software.aws.mcs.auth.SigV4AuthProvider;
+import software.aws.mcs.example.Book;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
 public class OrderFetcher {
-    public final static String TABLE_FORMAT = "%-25s%s\n";
+    private final static String HOST_NAME_CASSANDRA="cassandra.sa-east-1.amazonws.com";
+    private final static int CASSANDRA_PORT=9142;
 
-    public static void main(String[] args) {
-        if (args.length != 3) {
-            System.err.println("Usage: OrderFetcher <region> <endpoint> <customer ID>");
-            System.exit(1);
-        }
+    public static void main() throws IOException {
+        cassandraTest();
 
+
+    }
+
+    private static void cassandraTest() throws IOException {
         // Both of these can be speficied in the configuration, but
         // are being done programmatically here for flexibility as
         // example code.
-        SigV4AuthProvider provider = new SigV4AuthProvider(args[0]);
-        List<InetSocketAddress> contactPoints = Collections.singletonList(new InetSocketAddress(args[1], 9142));
+        SigV4AuthProvider provider = new SigV4AuthProvider(Regions.SA_EAST_1.getName());
+        List<InetSocketAddress> contactPoints = Collections.singletonList(new InetSocketAddress(HOST_NAME_CASSANDRA, CASSANDRA_PORT));
 
-        try (CqlSession session = CqlSession.builder().addContactPoints(contactPoints).withAuthProvider(provider).withLocalDatacenter(args[0]).build()) {
-            // Use a prepared query for quoting
-           /* PreparedStatement insert = session.prepare("insert into acme.orders2(email)" +
-                    "VALUES (teste@gmail.com)");
-            ResultSet rs2 = session.execute(insert.bind(args[2]));
-*/
+        try (CqlSession session = CqlSession.builder().addContactPoints(contactPoints).withAuthProvider(provider).withLocalDatacenter(Regions.SA_EAST_1.getName()).build()) {
 
-            PreparedStatement prepared = session.prepare("select * from acme.orders where customer_id = ?");
+            insertCassandra(session);
 
-            // We use execute to send a query to Cassandra. This returns a ResultSet, which is essentially a collection
-            // of Row objects.
-            ResultSet rs = session.execute(prepared.bind(args[2]));
-
-            // Print the header
-            System.out.printf(TABLE_FORMAT, "Date", "Order Id");
-
-            for (Row row : rs) {
-                System.out.printf(TABLE_FORMAT, row.getInstant("order_timestamp"), row.getUuid("order_id"));
-            }
+            readCassandra(session);
         }
+    }
 
+    private static void insertCassandra(CqlSession session) throws IOException{
+
+        List<Book> books = getObjectContentS3();
+        System.out.println("Execution insert bookstore.books...");
+
+        PreparedStatement insertBook = session.prepare("insert into bookstore.books"
+                +"(isbn, title, author, pages, year_of_publication)"+ "values(?, ?, ?, ?, ?)");
+
+        books.stream().forEach((Book book)->{
+            BoundStatement boundStatement = insertBook.bind()
+                    .setString(0,book.getIsbn())
+                    .setString(1,book.getTitle())
+                    .setString(2,book.getAuthor())
+                    .setInt(3,book.getPages())
+                    .setInt(4,book.getYear())
+                    .setConsistencyLevel(ConsistencyLevel.LOCAL_QUORUM);
+            ResultSet resultSet = session.execute(boundStatement);
+        });
+        System.out.println("done");
+    }
+
+    private static void readCassandra(CqlSession session) {
+        PreparedStatement prepared = session.prepare("select * from bookstore.books");
+
+        System.out.println("Executing query bookstore.books...");
+        // We use execute to send a query to Cassandra. This returns a ResultSet, which is essentially a collection
+        // of Row objects.
+        ResultSet rs = session.execute(prepared.bind());
+
+        // Print the header
+        for (Row row : rs) {
+            System.out.println(" ISBP= "+row.getString("isbn")+
+                    " AUTHOR= "+row.getString("author")+
+                    " PAGES= "+row.getInt("pages")+
+                    " TITLE= "+row.getString("title")+
+                    " YEAR_OF_PUBLICATON= "+row.getInt("year_of_publication")
+            );
+        }
+        System.out.println();
+    }
+
+    private static List<Book> getObjectContentS3() throws IOException {
+        String bukectName = "my-bucket";
+        String key = "cassandra-data-example.csv";
+        S3Object fullObject = null;
+
+        AmazonS3 s3Client = AmazonS3ClientBuilder.standard()
+                .withRegion(Regions.SA_EAST_1)
+                .build();
+        System.out.println("Downloading an object");
+        fullObject = s3Client.getObject(new GetObjectRequest(bukectName,key));
+        System.out.println("Content-Type "+ fullObject.getObjectMetadata().getContentType());
+        System.out.println("Content: ");
+        List<Book> books = convertToBooks(fullObject.getObjectContent());
+        return books;
+    }
+
+    private static List<Book> convertToBooks(S3ObjectInputStream objectContent) throws IOException {
+        List<Book> books = new ArrayList<>();
+        BufferedReader reader = new BufferedReader(new InputStreamReader(objectContent));
+        String line = null;
+
+        while((line = reader.readLine()) != null){
+            System.out.println(line);
+            String[] item = line.split(";");
+            Book book = new Book();
+            book.setIsbn(item[0]);
+            book.setTitle(item[1]);
+            book.setAuthor(item[2]);
+            book.setPages(Integer.parseInt(item[3]));
+            book.setYear(Integer.parseInt(item[4]));
+            books.add(book);
+            line = null;
+        }
+        return books;
     }
 }
